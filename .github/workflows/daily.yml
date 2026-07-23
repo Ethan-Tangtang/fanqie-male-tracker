@@ -17,6 +17,8 @@ jobs:
       - uses: stefanzweifel/git-auto-commit-action@v5
         with: {commit_message: 'chore: update Fanqie male rankings', file_pattern: 'data index.html'}
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with: {path: '.'}
       - id: deployment
