@@ -59,7 +59,8 @@ def collect_rank(page, label: str, url: str, limit: int, delay: float, category_
     for category, rank_url in categories(page, url)[:category_limit or None]:
         page.goto(rank_url, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_timeout(1200)
-        for _ in range(3): page.mouse.wheel(0, 900); page.wait_for_timeout(500)
+        # 排行页为懒加载；较大滚动距离可稳定呈现前 30 张卡片。
+        for _ in range(3): page.mouse.wheel(0, 1100); page.wait_for_timeout(700)
         books = [parse_card(x) for x in page.evaluate(CARD_EXTRACTOR)[:limit]]
         result.append({"category": category, "books": books})
         print(f"{label}: {category}: {len(books)} books")
@@ -80,14 +81,14 @@ def enrich_scores(page, groups: list[dict], delay: float) -> list[dict]:
     return sorted((b for b in unique.values() if b['score'] is not None), key=lambda b: (b['score'], b['reading_value']), reverse=True)
 
 def main():
-    ap = argparse.ArgumentParser(); ap.add_argument('--limit', type=int, default=30); ap.add_argument('--sleep', type=float, default=4); ap.add_argument('--category-limit', type=int, default=0, help='Limit categories for a smoke test; 0 means all'); ap.add_argument('--headed', action='store_true'); args = ap.parse_args()
+    ap = argparse.ArgumentParser(); ap.add_argument('--limit', type=int, default=30); ap.add_argument('--sleep', type=float, default=4); ap.add_argument('--category-limit', type=int, default=0, help='Limit categories for a smoke test; 0 means all'); ap.add_argument('--skip-scores', action='store_true', help='Save rank data without visiting detail pages for score enrichment'); ap.add_argument('--headed', action='store_true'); args = ap.parse_args()
     SNAPSHOTS.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=not args.headed)
         page = browser.new_page(user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36')
         new = collect_rank(page, 'new_books', RANKS['new_books'], args.limit, args.sleep, args.category_limit)
         reading = collect_rank(page, 'high_reading', RANKS['high_reading'], args.limit, args.sleep, args.category_limit)
-        high_score = enrich_scores(page, new + reading, args.sleep)
+        high_score = [] if args.skip_scores else enrich_scores(page, new + reading, args.sleep)
         browser.close()
     stamp = datetime.now(timezone.utc).astimezone().isoformat(timespec='seconds')
     payload = {"generated_at": stamp, "channel": "male", "new_books": new, "high_reading": reading, "high_score": high_score}
