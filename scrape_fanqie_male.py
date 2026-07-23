@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 '''Collect public Fanqie male-channel new and reading ranks, then derive high-score works.'''
 from __future__ import annotations
-import argparse, json, re, time
+import argparse, json, math, re, time
 from datetime import datetime, timezone
 from pathlib import Path
 from playwright.sync_api import sync_playwright
@@ -80,18 +80,73 @@ def enrich_scores(page, groups: list[dict], delay: float) -> list[dict]:
         time.sleep(delay)
     return sorted((b for b in unique.values() if b['score'] is not None), key=lambda b: (b['score'], b['reading_value']), reverse=True)
 
+def previous_index() -> dict:
+    latest = DATA / 'latest.json'
+    if not latest.exists():
+        return {}
+    try:
+        payload = json.loads(latest.read_text(encoding='utf-8'))
+        books = [b for group in payload.get('new_books', []) + payload.get('high_reading', []) for b in group.get('books', [])]
+        return {book['url']: book for book in books if book.get('url')}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+def enrich_observations(groups: list[dict], previous: dict, is_new_rank: bool) -> None:
+    for group in groups:
+        for position, book in enumerate(group['books'], start=1):
+            prior = previous.get(book['url'], {})
+            old_reading = float(prior.get('reading_value') or 0)
+            reading_delta = round(book['reading_value'] - old_reading)
+            tracking_days = int(prior.get('tracking_days') or 0) + 1
+            rank_component = max(0, 1 - (position - 1) / 30) * 25
+            reading_component = min(1, math.log10(book['reading_value'] + 1) / 7) * 35
+            trend_component = min(15, max(-5, reading_delta / max(1, old_reading) * 100)) if old_reading else 5
+            quality_score = round(min(100, max(0, 25 + rank_component + reading_component + trend_component + (10 if is_new_rank else 0))), 1)
+            platform_rating = book.get('score')
+            book.update({
+                'book_id': book['url'].rsplit('/', 1)[-1],
+                'rank': position,
+                'platform_rating': platform_rating,
+                'rating_source': 'public_page' if platform_rating is not None else 'not_public',
+                'quality_score': quality_score,
+                'quality_score_note': '公开信号指数（排名、在读、变化），不是番茄平台评分',
+                'tracking_days': tracking_days,
+                'reading_change': reading_delta,
+            })
+
+def unique_books(groups: list[dict]) -> list[dict]:
+    result = {}
+    for group in groups:
+        for book in group['books']:
+            current = result.get(book['url'])
+            if current is None or book['quality_score'] > current['quality_score']:
+                result[book['url']] = book
+    return list(result.values())
+
 def main():
-    ap = argparse.ArgumentParser(); ap.add_argument('--limit', type=int, default=30); ap.add_argument('--sleep', type=float, default=4); ap.add_argument('--category-limit', type=int, default=0, help='Limit categories for a smoke test; 0 means all'); ap.add_argument('--skip-scores', action='store_true', help='Save rank data without visiting detail pages for score enrichment'); ap.add_argument('--headed', action='store_true'); args = ap.parse_args()
+    ap = argparse.ArgumentParser(); ap.add_argument('--limit', type=int, default=30); ap.add_argument('--sleep', type=float, default=4); ap.add_argument('--category-limit', type=int, default=0, help='Limit categories for a smoke test; 0 means all'); ap.add_argument('--enrich-platform-ratings', action='store_true', help='Visit public detail pages to attempt rating extraction; may be slower'); ap.add_argument('--headed', action='store_true'); args = ap.parse_args()
+    previous = previous_index()
     SNAPSHOTS.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=not args.headed)
         page = browser.new_page(user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36')
         new = collect_rank(page, 'new_books', RANKS['new_books'], args.limit, args.sleep, args.category_limit)
         reading = collect_rank(page, 'high_reading', RANKS['high_reading'], args.limit, args.sleep, args.category_limit)
-        high_score = [] if args.skip_scores else enrich_scores(page, new + reading, args.sleep)
+        rated = enrich_scores(page, new + reading, args.sleep) if args.enrich_platform_ratings else []
         browser.close()
+    enrich_observations(new, previous, True)
+    enrich_observations(reading, previous, False)
+    all_books = unique_books(new + reading)
+    rated_by_url = {book['url']: book for book in rated}
+    for book in all_books:
+        if book['url'] in rated_by_url:
+            book['platform_rating'] = rated_by_url[book['url']]['score']
+            book['score'] = book['platform_rating']
+            book['rating_source'] = 'public_page'
+    high_score = sorted(all_books, key=lambda book: (book.get('platform_rating') is not None, book.get('platform_rating') or 0, book['quality_score'], book['reading_value']), reverse=True)[:30]
+    potential_new = sorted(unique_books(new), key=lambda book: (book['quality_score'], book['reading_value']), reverse=True)[:20]
     stamp = datetime.now(timezone.utc).astimezone().isoformat(timespec='seconds')
-    payload = {"generated_at": stamp, "channel": "male", "new_books": new, "high_reading": reading, "high_score": high_score}
+    payload = {"generated_at": stamp, "channel": "male", "new_books": new, "high_reading": reading, "high_score": high_score, "potential_new": potential_new, "metrics_note": {"platform_rating": "番茄公开页未提供时显示暂无公开评分", "tracking_days": "本项目连续快照中出现的天数，不是用户阅读时长或完读率", "reading_change": "相对上一份快照的在读数变化"}}
     (SNAPSHOTS / f"male_{datetime.now().strftime('%Y%m%d')}.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
     (DATA / 'latest.json').write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
     print('Wrote data/latest.json')
