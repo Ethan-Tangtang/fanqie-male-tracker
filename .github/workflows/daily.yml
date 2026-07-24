@@ -1,25 +1,46 @@
 name: Daily Fanqie Male Tracker
 on:
-  schedule: [{cron: '0 0 * * *'}]
+  schedule:
+    # 08:00 China Standard Time (UTC+8).
+    - cron: '0 0 * * *'
+    # Fallback: GitHub may delay/drop jobs at the top of the hour. This run
+    # exits after deployment when today's snapshot was already created.
+    - cron: '15 0 * * *'
   workflow_dispatch:
 permissions: {contents: write, pages: write, id-token: write}
 concurrency: {group: fanqie-male-tracker, cancel-in-progress: false}
 jobs:
   collect-and-deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     environment: {name: github-pages, url: '${{ steps.deployment.outputs.page_url }}'}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
         with: {python-version: '3.12'}
       - run: pip install -r requirements.txt && playwright install --with-deps chromium
-      - run: python scrape_fanqie_male.py && python build_site.py
+      - name: Check today's snapshot
+        id: snapshot
+        run: |
+          TODAY=$(date -u +"%Y%m%d")
+          FILE="data/snapshots/male_${TODAY}.json"
+          if [ -s "$FILE" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Today's snapshot already exists: $FILE"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Collect public ranks
+        if: steps.snapshot.outputs.exists == 'false'
+        run: python scrape_fanqie_male.py --limit 30 --sleep 1
+      - name: Build dashboard
+        run: python build_site.py
       - uses: stefanzweifel/git-auto-commit-action@v5
         with: {commit_message: 'chore: update Fanqie male rankings', file_pattern: 'data index.html'}
       - uses: actions/configure-pages@v5
         with:
           enablement: true
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v4
         with: {path: '.'}
       - id: deployment
         uses: actions/deploy-pages@v4
