@@ -51,10 +51,14 @@ def categories(page, rank_url: str) -> list[tuple[str, str]]:
     except Exception as exc:
         print(f"category index skipped: {rank_url} ({exc})")
         return []
+    # Both male rank types are rendered in the page navigation.  Keep only
+    # links belonging to the requested board, otherwise each board is scraped
+    # twice (once as new books and once as high reading).
+    rank_prefix = re.search(r"(/rank/1_[12])$", rank_url).group(1)
     rows = page.eval_on_selector_all('a[href*="/rank/1_"]', "els => els.map(e => [e.innerText.trim(), e.getAttribute('href')])")
     out, seen = [], set()
     for name, href in rows:
-        if href and href not in seen and re.match(r"/rank/1_[12]_\d+", href):
+        if href and href.startswith(rank_prefix + '_') and href not in seen and re.match(r"/rank/1_[12]_\d+", href):
             seen.add(href); out.append((decode_text(name) or href.rsplit('_', 1)[-1], BASE + href))
     return out
 
