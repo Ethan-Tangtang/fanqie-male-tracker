@@ -1,0 +1,13 @@
+{
+  "generated_at": null,
+  "channel": "male",
+  "assessment": "public_signal_only_not_revenue",
+  "criteria": {
+    "minimum_continuous_tracking_days": 3,
+    "minimum_current_reading": 100000,
+    "minimum_quality_score": 65,
+    "minimum_average_daily_reading_growth": 0
+  },
+  "note": "候选名单仅依据公开榜单的连续出现、在读规模和在读变化筛选，不代表真实稿费、订阅收入或平台结算。",
+  "candidates": []
+}
