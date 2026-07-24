@@ -165,6 +165,47 @@ def sustained_income_candidates(all_books: list[dict], history: dict[date, dict[
         'candidates': candidates[:50],
     }
 
+def update_high_quality_index(all_books: list[dict], observed_on: date, existing: dict | None = None) -> dict:
+    """Merge one day's quality-score-qualified books into a URL-deduplicated archive."""
+    existing = existing or {}
+    records = {record['url']: record for record in existing.get('books', []) if record.get('url')}
+    observed_label = observed_on.isoformat()
+    for book in all_books:
+        if float(book.get('quality_score') or 0) < 80 or not book.get('url'):
+            continue
+        record = records.get(book['url'])
+        if record is None:
+            record = book.copy()
+            record.update({
+                'first_qualified_on': observed_label,
+                'last_qualified_on': observed_label,
+                'qualified_days': 1,
+                'qualified_dates': [observed_label],
+                'best_quality_score': book['quality_score'],
+            })
+            records[book['url']] = record
+            continue
+        dates = list(record.get('qualified_dates') or [])
+        if observed_label not in dates:
+            dates.append(observed_label)
+        record.update(book)
+        record.update({
+            'first_qualified_on': record.get('first_qualified_on') or observed_label,
+            'last_qualified_on': observed_label,
+            'qualified_dates': dates,
+            'qualified_days': len(dates),
+            'best_quality_score': max(float(record.get('best_quality_score') or 0), float(book['quality_score'])),
+        })
+    books = sorted(records.values(), key=lambda book: (book.get('best_quality_score', 0), book.get('quality_score', 0), book.get('reading_value', 0)), reverse=True)
+    return {
+        'generated_at': datetime.now(timezone.utc).astimezone().isoformat(timespec='seconds'),
+        'channel': 'male',
+        'minimum_quality_score': 80,
+        'deduplication_key': 'url',
+        'note': '每天合并质量指数大于等于 80 的公开榜单作品；同一作品仅保留一条记录，并更新最近数据与达标日期。',
+        'books': books,
+    }
+
 def enrich_observations(groups: list[dict], previous: dict, is_new_rank: bool) -> None:
     for group in groups:
         for position, book in enumerate(group['books'], start=1):
@@ -223,11 +264,19 @@ def main():
     high_score = sorted(all_books, key=lambda book: (book.get('platform_rating') is not None, book.get('platform_rating') or 0, book['quality_score'], book['reading_value']), reverse=True)[:30]
     potential_new = sorted(unique_books(new), key=lambda book: (book['quality_score'], book['reading_value']), reverse=True)[:20]
     sustained = sustained_income_candidates(all_books, history, today)
+    high_quality_path = DATA / 'high_quality_index.json'
+    try:
+        high_quality_existing = json.loads(high_quality_path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        high_quality_existing = {}
+    high_quality = update_high_quality_index(all_books, today, high_quality_existing)
     stamp = datetime.now(timezone.utc).astimezone().isoformat(timespec='seconds')
     payload = {"generated_at": stamp, "channel": "male", "new_books": new, "high_reading": reading, "high_score": high_score, "potential_new": potential_new, "metrics_note": {"platform_rating": "番茄公开页未提供时显示暂无公开评分", "tracking_days": "本项目连续快照中出现的天数，不是用户阅读时长或完读率", "reading_change": "相对上一份快照的在读数变化"}}
     (SNAPSHOTS / f"male_{today_code}.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
     (DATA / 'latest.json').write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
     (DATA / 'sustained_income_candidates.json').write_text(json.dumps(sustained, ensure_ascii=False, indent=2), encoding='utf-8')
+    high_quality_path.write_text(json.dumps(high_quality, ensure_ascii=False, indent=2), encoding='utf-8')
     print('Wrote data/latest.json')
     print('Wrote data/sustained_income_candidates.json')
+    print('Wrote data/high_quality_index.json')
 if __name__ == '__main__': main()
