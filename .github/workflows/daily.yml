@@ -32,7 +32,7 @@ jobs:
           fi
       - name: Collect public ranks
         if: steps.snapshot.outputs.exists == 'false'
-        run: python scrape_fanqie_male.py --limit 30 --sleep 1
+        run: python scrape_fanqie_male.py --limit 30 --sleep 0.5
       - name: Build dashboard
         run: python build_site.py
       - uses: stefanzweifel/git-auto-commit-action@v5
