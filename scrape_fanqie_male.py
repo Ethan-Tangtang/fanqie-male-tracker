@@ -45,8 +45,12 @@ def parse_card(card: dict) -> dict:
             "score": float(score.group(1)) if score else None}
 
 def categories(page, rank_url: str) -> list[tuple[str, str]]:
-    page.goto(rank_url, wait_until="domcontentloaded", timeout=30000)
-    page.wait_for_timeout(1500)
+    try:
+        page.goto(rank_url, wait_until="domcontentloaded", timeout=15000)
+        page.wait_for_timeout(800)
+    except Exception as exc:
+        print(f"category index skipped: {rank_url} ({exc})")
+        return []
     rows = page.eval_on_selector_all('a[href*="/rank/1_"]', "els => els.map(e => [e.innerText.trim(), e.getAttribute('href')])")
     out, seen = [], set()
     for name, href in rows:
@@ -57,11 +61,17 @@ def categories(page, rank_url: str) -> list[tuple[str, str]]:
 def collect_rank(page, label: str, url: str, limit: int, delay: float, category_limit: int) -> list[dict]:
     result = []
     for category, rank_url in categories(page, url)[:category_limit or None]:
-        page.goto(rank_url, wait_until="domcontentloaded", timeout=30000)
-        page.wait_for_timeout(1200)
-        # 排行页为懒加载；较大滚动距离可稳定呈现前 30 张卡片。
-        for _ in range(3): page.mouse.wheel(0, 1100); page.wait_for_timeout(700)
-        books = [parse_card(x) for x in page.evaluate(CARD_EXTRACTOR)[:limit]]
+        try:
+            page.goto(rank_url, wait_until="domcontentloaded", timeout=15000)
+            page.wait_for_timeout(800)
+            # Rank pages are lazy-loaded; three larger scrolls reveal the top 30 cards.
+            for _ in range(3):
+                page.mouse.wheel(0, 1100)
+                page.wait_for_timeout(600)
+            books = [parse_card(x) for x in page.evaluate(CARD_EXTRACTOR)[:limit]]
+        except Exception as exc:
+            print(f"{label}: {category}: skipped ({exc})")
+            continue
         result.append({"category": category, "books": books})
         print(f"{label}: {category}: {len(books)} books")
         time.sleep(delay)
@@ -124,7 +134,7 @@ def unique_books(groups: list[dict]) -> list[dict]:
     return list(result.values())
 
 def main():
-    ap = argparse.ArgumentParser(); ap.add_argument('--limit', type=int, default=30); ap.add_argument('--sleep', type=float, default=4); ap.add_argument('--category-limit', type=int, default=0, help='Limit categories for a smoke test; 0 means all'); ap.add_argument('--enrich-platform-ratings', action='store_true', help='Visit public detail pages to attempt rating extraction; may be slower'); ap.add_argument('--headed', action='store_true'); args = ap.parse_args()
+    ap = argparse.ArgumentParser(); ap.add_argument('--limit', type=int, default=30); ap.add_argument('--sleep', type=float, default=0.5); ap.add_argument('--category-limit', type=int, default=0, help='Limit categories for a smoke test; 0 means all'); ap.add_argument('--enrich-platform-ratings', action='store_true', help='Visit public detail pages to attempt rating extraction; may be slower'); ap.add_argument('--headed', action='store_true'); args = ap.parse_args()
     previous = previous_index()
     SNAPSHOTS.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as p:
