@@ -8,6 +8,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 data = json.loads((ROOT / 'data/latest.json').read_text(encoding='utf-8'))
+sustained_path = ROOT / 'data/sustained_income_candidates.json'
+sustained = json.loads(sustained_path.read_text(encoding='utf-8')) if sustained_path.exists() else {'candidates': []}
 
 def flatten(groups):
     return [book for group in groups for book in group.get('books', [])]
@@ -27,6 +29,7 @@ sections = [
     ('新书榜 Top 30', flatten(data.get('new_books', []))),
     ('高质量作品 Top 30', data.get('high_score', [])),
     ('潜力新书榜', data.get('potential_new', [])),
+    ('持续收益潜力候选', sustained.get('candidates', [])),
     ('高阅读量作品 Top 30', flatten(data.get('high_reading', []))),
 ]
 body = ''.join(f'<section><h2>{title}</h2>{"".join(metric(book) for book in books[:30]) or "<p>暂无数据</p>"}</section>' for title, books in sections)
