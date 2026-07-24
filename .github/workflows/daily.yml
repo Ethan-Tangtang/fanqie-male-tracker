@@ -33,6 +33,8 @@ jobs:
       - name: Collect public ranks
         if: steps.snapshot.outputs.exists == 'false'
         run: python scrape_fanqie_male.py --limit 30 --sleep 0.5
+      - name: Export private Excel archives
+        run: python export_excel_archives.py
       - name: Build dashboard
         run: python build_site.py
       - uses: stefanzweifel/git-auto-commit-action@v5
