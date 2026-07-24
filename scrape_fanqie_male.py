@@ -2,7 +2,7 @@
 '''Collect public Fanqie male-channel new and reading ranks, then derive high-score works.'''
 from __future__ import annotations
 import argparse, json, math, re, time
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
@@ -105,6 +105,66 @@ def previous_index() -> dict:
     except (OSError, json.JSONDecodeError):
         return {}
 
+def snapshot_history(exclude_date: str) -> dict[date, dict[str, dict]]:
+    """Index public snapshots by calendar day without treating revenue as observed."""
+    history: dict[date, dict[str, dict]] = {}
+    for path in sorted(SNAPSHOTS.glob('male_*.json')):
+        date_code = path.stem.removeprefix('male_')
+        if date_code == exclude_date:
+            continue
+        try:
+            day = datetime.strptime(date_code, '%Y%m%d').date()
+            payload = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        books = [book for group in payload.get('new_books', []) + payload.get('high_reading', []) for book in group.get('books', [])]
+        history[day] = {book['url']: book for book in books if book.get('url')}
+    return history
+
+def continuous_tracking_days(url: str, history: dict[date, dict[str, dict]], today: date) -> int:
+    days, cursor = 1, today - timedelta(days=1)
+    while url in history.get(cursor, {}):
+        days += 1
+        cursor -= timedelta(days=1)
+    return days
+
+def sustained_income_candidates(all_books: list[dict], history: dict[date, dict[str, dict]], today: date) -> dict:
+    """Produce a conservative watchlist from public reading signals, never revenue claims."""
+    candidates = []
+    for book in all_books:
+        days = continuous_tracking_days(book['url'], history, today)
+        first_day = today - timedelta(days=days - 1)
+        first = history.get(first_day, {}).get(book['url'], book)
+        first_reading = float(first.get('reading_value') or book['reading_value'])
+        current_reading = float(book['reading_value'] or 0)
+        average_daily_growth = round((current_reading - first_reading) / max(1, days - 1))
+        # These thresholds describe a repeatable public-signal screen, not income.
+        if days < 3 or current_reading < 100_000 or book['quality_score'] < 65 or average_daily_growth < 0:
+            continue
+        sustained_score = round(min(100, book['quality_score'] * 0.55 + min(20, days * 3) + min(25, max(0, average_daily_growth) / 4_000)), 1)
+        item = book.copy()
+        item.update({
+            'continuous_tracking_days': days,
+            'average_daily_reading_growth': average_daily_growth,
+            'sustained_income_signal': sustained_score,
+            'assessment': 'public_signal_candidate',
+        })
+        candidates.append(item)
+    candidates.sort(key=lambda book: (book['sustained_income_signal'], book['reading_value']), reverse=True)
+    return {
+        'generated_at': datetime.now(timezone.utc).astimezone().isoformat(timespec='seconds'),
+        'channel': 'male',
+        'assessment': 'public_signal_only_not_revenue',
+        'criteria': {
+            'minimum_continuous_tracking_days': 3,
+            'minimum_current_reading': 100000,
+            'minimum_quality_score': 65,
+            'minimum_average_daily_reading_growth': 0,
+        },
+        'note': '候选名单仅依据公开榜单的连续出现、在读规模和在读变化筛选，不代表真实稿费、订阅收入或平台结算。',
+        'candidates': candidates[:50],
+    }
+
 def enrich_observations(groups: list[dict], previous: dict, is_new_rank: bool) -> None:
     for group in groups:
         for position, book in enumerate(group['books'], start=1):
@@ -140,6 +200,9 @@ def unique_books(groups: list[dict]) -> list[dict]:
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument('--limit', type=int, default=30); ap.add_argument('--sleep', type=float, default=0.5); ap.add_argument('--category-limit', type=int, default=0, help='Limit categories for a smoke test; 0 means all'); ap.add_argument('--enrich-platform-ratings', action='store_true', help='Visit public detail pages to attempt rating extraction; may be slower'); ap.add_argument('--headed', action='store_true'); args = ap.parse_args()
     previous = previous_index()
+    today_code = datetime.now().strftime('%Y%m%d')
+    today = datetime.now().date()
+    history = snapshot_history(today_code)
     SNAPSHOTS.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=not args.headed)
@@ -159,9 +222,12 @@ def main():
             book['rating_source'] = 'public_page'
     high_score = sorted(all_books, key=lambda book: (book.get('platform_rating') is not None, book.get('platform_rating') or 0, book['quality_score'], book['reading_value']), reverse=True)[:30]
     potential_new = sorted(unique_books(new), key=lambda book: (book['quality_score'], book['reading_value']), reverse=True)[:20]
+    sustained = sustained_income_candidates(all_books, history, today)
     stamp = datetime.now(timezone.utc).astimezone().isoformat(timespec='seconds')
     payload = {"generated_at": stamp, "channel": "male", "new_books": new, "high_reading": reading, "high_score": high_score, "potential_new": potential_new, "metrics_note": {"platform_rating": "番茄公开页未提供时显示暂无公开评分", "tracking_days": "本项目连续快照中出现的天数，不是用户阅读时长或完读率", "reading_change": "相对上一份快照的在读数变化"}}
-    (SNAPSHOTS / f"male_{datetime.now().strftime('%Y%m%d')}.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+    (SNAPSHOTS / f"male_{today_code}.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
     (DATA / 'latest.json').write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+    (DATA / 'sustained_income_candidates.json').write_text(json.dumps(sustained, ensure_ascii=False, indent=2), encoding='utf-8')
     print('Wrote data/latest.json')
+    print('Wrote data/sustained_income_candidates.json')
 if __name__ == '__main__': main()
